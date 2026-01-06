@@ -223,6 +223,20 @@ if (!cRes.ok) {
 }
     const r = await excelAppend(payload);
     const full = await excelGetRow(r.row);
+    
+// Wenn bestehender Kunde: Nachfrage für weitere Kreation
+if (cJson.status === "existing") {
+  const again = confirm(
+    "Bestehender Kunde – weitere Kreationen erstellen?"
+  );
+
+  if (again) {
+    // nur Kreationsfelder leeren
+    clearCreationFields(); 
+    // Kunde bleibt (Vorname, Nachname, E-Mail)
+    return;
+  }
+}
 
     lastSaved = { row: r.row, payload, computed: r.computed, fullRow: full };
 
