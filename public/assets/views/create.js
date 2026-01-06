@@ -21,11 +21,36 @@ function concOptions() {
   `;
 }
 
-function getVal(id){ return document.getElementById(id).value; }
-function setVal(id,v){ document.getElementById(id).value = v; }
+function getVal(id) {
+  const el = document.getElementById(id);
+  return el ? el.value : "";
+}
+function setVal(id, v) {
+  const el = document.getElementById(id);
+  if (el) el.value = v;
+}
 
-let lastSaved = null; // { row, payload, computed, fullRow }
-let lastCustomerStatus = null; // "created" | "existing" | null
+let lastSaved = null;
+
+function modalConfirm({ title, bodyHtml, okText = "OK", cancelText = "Abbrechen" }) {
+  return new Promise((resolve) => {
+    showModal({
+      title,
+      bodyHtml,
+      buttons: [
+        {
+          text: cancelText,
+          onClick: () => resolve(false)
+        },
+        {
+          text: okText,
+          className: "primary",
+          onClick: () => resolve(true)
+        }
+      ]
+    });
+  });
+}
 
 export async function renderCreate(root) {
   root.innerHTML = `
@@ -148,21 +173,14 @@ export async function renderCreate(root) {
   printBtn.disabled = true;
 
   const clearCreationFieldsKeepCustomer = () => {
-    ["namefragrance","p1","d1","p2","d2","p3","d3","bem","g1","g2","g3","tot"].forEach(id => setVal(id, ""));
+    ["namefragrance", "p1", "d1", "p2", "d2", "p3", "d3", "bem", "g1", "g2", "g3", "tot"].forEach((id) => setVal(id, ""));
     setVal("konz", "EDP");
     setVal("format", "15");
     lastSaved = null;
     printBtn.disabled = true;
   };
 
-  // Backwards-compatible alias (some logic may call this name)
-  const clearCreationFields = clearCreationFieldsKeepCustomer;
-
-  // keep Kundeninfo = "Vorname Nachname" (Excel column A)
-  const getCustomerInfo = () => `${getVal("vorname").trim()} ${getVal("nachname").trim()}`.trim();
-  document.getElementById("vorname")
-  document.getElementById("nachname")
-  // custom format popup
+  // Format: custom popup
   document.getElementById("format").addEventListener("change", () => {
     const v = getVal("format");
     if (v === "custom") {
@@ -170,7 +188,10 @@ export async function renderCreate(root) {
         title: "Individuelles Format (ml)",
         bodyHtml: `<label>ml (ganze Zahl)</label><input id="customMl" inputmode="numeric" placeholder="z.B. 120" />`,
         buttons: [
-          { text:"OK", className:"primary", onClick: () => {
+          {
+            text: "OK",
+            className: "primary",
+            onClick: () => {
               const n = parseMlInput(document.getElementById("customMl").value);
               document.getElementById("format").dataset.custom = String(n);
             }
@@ -182,23 +203,63 @@ export async function renderCreate(root) {
     }
   });
 
-  async function doSave(askPrint=true) {
+  const getCustomerInfo = () => `${getVal("vorname").trim()} ${getVal("nachname").trim()}`.trim();
+
+  async function precheckCustomerExistingOrCreateAllowed() {
     const fn = getVal("vorname").trim();
     const ln = getVal("nachname").trim();
     const emailRaw = getVal("email").trim();
+
+    // Call the existing Netlify function (it returns status: created|existing)
+    const cRes = await fetch("/.netlify/functions/shopify-customer-find-or-create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ firstName: fn, lastName: ln, email: emailRaw })
+    });
+
+    const cJson = await cRes.json().catch(() => ({}));
+    if (!cRes.ok) {
+      throw new Error(cJson?.error || "Shopify Kunde Fehler.");
+    }
+
+    // If existing, ask BEFORE saving the creation
+    if (cJson.status === "existing") {
+      const ok = await modalConfirm({
+        title: "Bestehender Kunde",
+        bodyHtml: "Kunde existiert bereits. Kreation trotzdem speichern?",
+        okText: "Speichern",
+        cancelText: "Abbrechen"
+      });
+      if (!ok) return { proceed: false, status: "existing" };
+    }
+
+    return { proceed: true, status: cJson.status || null };
+  }
+
+  async function doSave() {
+    const fn = getVal("vorname").trim();
+    const ln = getVal("nachname").trim();
+    const emailRaw = getVal("email").trim();
+
     if (!fn || !ln) throw new Error("Vorname und Nachname fehlen.");
     if (!emailRaw) throw new Error("E-Mail fehlt.");
 
-    // ensure Kundeninfo is always synced
     const formatSel = getVal("format");
-    const formatMl = (formatSel === "custom") ? Number(document.getElementById("format").dataset.custom || "") : Number(formatSel);
+    const formatMl = formatSel === "custom" ? Number(document.getElementById("format").dataset.custom || "") : Number(formatSel);
     if (!formatMl) throw new Error("Format fehlt (oder individuelles Format nicht bestätigt).");
 
+    // Precheck (Shopify): existing? -> ask before save
+    const pre = await precheckCustomerExistingOrCreateAllowed();
+    if (!pre.proceed) {
+      msg.textContent = "Abgebrochen.";
+      return;
+    }
+
     const payload = {
-      "Kundeninfo": getCustomerInfo().trim(),
-      "Email": emailRaw.toLowerCase(),
+      Kundeninfo: getCustomerInfo().trim(),
+      Email: emailRaw.toLowerCase(),
       "Name Fragrance": getVal("namefragrance").trim(),
-      "Konzentration": getVal("konz"),
+      Konzentration: getVal("konz"),
       "%/1": getVal("p1"),
       "Duft 1": getVal("d1"),
       "%/2": getVal("p2"),
@@ -207,61 +268,22 @@ export async function renderCreate(root) {
       "Duft 3": getVal("d3"),
       "Format ml": formatMl,
       "Datum Kauf": todayCH(),
-      "Bemerkungen": getVal("bem")
+      Bemerkungen: getVal("bem")
     };
 
-    // Shopify: find-or-create customer (required before Excel)
-    const cRes = await fetch("/.netlify/functions/shopify-customer-find-or-create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ firstName: fn, lastName: ln, email: emailRaw })
-    });
-    const cJson = await cRes.json().catch(() => ({}));
-    if (!cRes.ok) throw new Error(cJson?.error || "Shopify Kunde Fehler.");
-    lastCustomerStatus = cJson?.status || null;
-
+    // Single call that saves to Shopify + Excel (your Netlify function excel-append does both now)
     const r = await excelAppend(payload);
     const full = await excelGetRow(r.row);
 
-    lastSaved = { row: r.row, payload, computed: r.computed, fullRow: full };
+    lastSaved = { row: r.row, payload, fullRow: full };
 
     setVal("g1", full["g Duft 1"] || "");
     setVal("g2", full["g Duft 2"] || "");
     setVal("g3", full["g Duft 3"] || "");
     setVal("tot", full["Total %"] || "");
+
     msg.textContent = `Gespeichert ✅ (Zeile ${r.row})`;
     printBtn.disabled = false;
-
-    // Existing customer: ask to start another creation (customer stays)
-    if (lastCustomerStatus === "existing") {
-      showModal({
-        title: "Bestehender Kunde",
-        bodyHtml: "Bestehender Kunde – weitere Kreationen erstellen?",
-        buttons: [
-          {
-            text: "Weitere Kreation erstellen",
-            className: "primary",
-            onClick: () => {
-              clearCreationFields();
-              msg.textContent = "Bereit für neue Kreation (Kunde bleibt).";
-            }
-          },
-          { text: "Abbrechen" }
-        ]
-      });
-      return;
-    }
-
-    if (askPrint) {
-      showModal({
-        title: "Gespeichert",
-        bodyHtml: "Soll die Rezeptur gedruckt werden?",
-        buttons: [
-          { text:"Ja", className:"primary", onClick: async () => { await doPrintFirstCreation(); } },
-          { text:"Nein" }
-        ]
-      });
-    }
   }
 
   async function doPrintFirstCreation() {
@@ -286,7 +308,6 @@ export async function renderCreate(root) {
       { d: full["Duft 3"], g: full["g Duft 3"] }
     ];
 
-    // same 80mm-friendly layout as search/refill: Duft gross, g fett
     for (const b of blocks) {
       const d = String(b.d || "").trim();
       if (!d) continue;
@@ -315,18 +336,16 @@ export async function renderCreate(root) {
     const oldText = saveBtn.textContent;
     saveBtn.textContent = "Speichere...";
 
-    // lock other actions during save
     printBtn.disabled = true;
     clearBtn.disabled = true;
 
     try {
-      await doSave(true);
-    } catch(e) {
+      await doSave();
+    } catch (e) {
       msg.textContent = "Fehler: " + e.message;
     } finally {
       saveBtn.disabled = false;
       saveBtn.textContent = oldText;
-      // Drucken ist nur nach erfolgreichem Speichern erlaubt
       printBtn.disabled = !lastSaved;
       clearBtn.disabled = false;
     }
@@ -337,7 +356,6 @@ export async function renderCreate(root) {
     const oldText = printBtn.textContent;
     printBtn.textContent = "Drucke...";
 
-    // lock save/clear during print
     saveBtn.disabled = true;
     clearBtn.disabled = true;
 
@@ -345,13 +363,13 @@ export async function renderCreate(root) {
       if (!lastSaved) throw new Error("Bitte zuerst speichern.");
       await doPrintFirstCreation();
 
-      // Nach erfolgreichem Drucken: Kreationsfelder leeren, Kunde bleibt
+      // After successful print: only clear creation fields, keep customer
       clearCreationFieldsKeepCustomer();
-    } catch(e) {
+      msg.textContent = "Bereit für weitere Kreation (Kunde bleibt).";
+    } catch (e) {
       msg.textContent = "Fehler: " + e.message;
     } finally {
       printBtn.textContent = oldText;
-      // Drucken bleibt gesperrt bis erneut gespeichert wurde
       printBtn.disabled = !lastSaved;
       saveBtn.disabled = false;
       clearBtn.disabled = false;
@@ -364,9 +382,11 @@ export async function renderCreate(root) {
     clearBtn.textContent = "Lösche...";
 
     try {
-      ["vorname","nachname","email","namefragrance","p1","d1","p2","d2","p3","d3","bem","g1","g2","g3","tot"].forEach(id => setVal(id,""));
-      setVal("konz","EDP");
-      setVal("format","15");
+      ["vorname", "nachname", "email", "namefragrance", "p1", "d1", "p2", "d2", "p3", "d3", "bem", "g1", "g2", "g3", "tot"].forEach((id) =>
+        setVal(id, "")
+      );
+      setVal("konz", "EDP");
+      setVal("format", "15");
       lastSaved = null;
       printBtn.disabled = true;
       msg.textContent = "Geleert.";
