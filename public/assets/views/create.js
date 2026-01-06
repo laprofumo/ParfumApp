@@ -45,14 +45,15 @@ function modalConfirm({ title, bodyHtml, okText = "OK", cancelText = "Abbrechen"
   });
 }
 
-function showAfterSavePopup() {
+function showAfterSavePopup3() {
   return new Promise((resolve) => {
     showModal({
       title: "Gespeichert",
       bodyHtml: "Kreation gespeichert. Weitere Kreation erstellen?",
       buttons: [
-        { text: "Abbrechen", onClick: () => resolve(false) },
-        { text: "Weitere Kreation erstellen", className: "primary", onClick: () => resolve(true) }
+        { text: "Abbrechen", onClick: () => resolve({ action: "cancel" }) },
+        { text: "Drucken", className: "primary", onClick: () => resolve({ action: "print" }) },
+        { text: "Weitere Kreation erstellen", className: "primary", onClick: () => resolve({ action: "again" }) }
       ]
     });
   });
@@ -185,6 +186,16 @@ export async function renderCreate(root) {
     printBtn.disabled = true;
   };
 
+  const clearAllFields = () => {
+    ["vorname", "nachname", "email", "namefragrance", "p1", "d1", "p2", "d2", "p3", "d3", "bem", "g1", "g2", "g3", "tot"].forEach((id) =>
+      setVal(id, "")
+    );
+    setVal("konz", "EDP");
+    setVal("format", "15");
+    lastSaved = null;
+    printBtn.disabled = true;
+  };
+
   document.getElementById("format").addEventListener("change", () => {
     const v = getVal("format");
     if (v === "custom") {
@@ -285,12 +296,23 @@ export async function renderCreate(root) {
     msg.textContent = `Gespeichert ✅ (Zeile ${r.row})`;
     printBtn.disabled = false;
 
-    // Always show popup after successful save (Shopify + Excel)
-    const again = await showAfterSavePopup();
-    if (again) {
-      clearCreationFieldsKeepCustomer();
-      msg.textContent = "Bereit für weitere Kreation (Kunde bleibt).";
+    const choice = await showAfterSavePopup3();
+
+    if (choice.action === "print") {
+      await doPrintFirstCreation();
+      clearAllFields();
+      msg.textContent = "Gedruckt ✅ (alles geleert).";
+      return;
     }
+
+    if (choice.action === "again") {
+      await doPrintFirstCreation();
+      clearCreationFieldsKeepCustomer();
+      msg.textContent = "Gedruckt ✅ (bereit für weitere Kreation, Kunde bleibt).";
+      return;
+    }
+
+    // cancel -> do nothing
   }
 
   async function doPrintFirstCreation() {
@@ -334,8 +356,6 @@ export async function renderCreate(root) {
       footerText: s.receipt.footerText,
       lines
     });
-
-    msg.textContent = "Bon gesendet ✅";
   }
 
   saveBtn.onclick = async () => {
@@ -371,7 +391,7 @@ export async function renderCreate(root) {
       await doPrintFirstCreation();
 
       clearCreationFieldsKeepCustomer();
-      msg.textContent = "Bereit für weitere Kreation (Kunde bleibt).";
+      msg.textContent = "Gedruckt ✅ (bereit für weitere Kreation, Kunde bleibt).";
     } catch (e) {
       msg.textContent = "Fehler: " + e.message;
     } finally {
@@ -388,11 +408,7 @@ export async function renderCreate(root) {
     clearBtn.textContent = "Lösche...";
 
     try {
-      ["vorname", "nachname", "email", "namefragrance", "p1", "d1", "p2", "d2", "p3", "d3", "bem", "g1", "g2", "g3", "tot"].forEach((id) => setVal(id, ""));
-      setVal("konz", "EDP");
-      setVal("format", "15");
-      lastSaved = null;
-      printBtn.disabled = true;
+      clearAllFields();
       msg.textContent = "Geleert.";
     } finally {
       clearBtn.disabled = false;
