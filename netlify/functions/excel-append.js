@@ -48,7 +48,6 @@ async function renderFetch(path, { method = "GET", headers = {}, body } = {}) {
 
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    // 422 kommt von eurem Backend oft mit einer konkreten Meldung
     const msg =
       json?.error ||
       json?.message ||
@@ -85,61 +84,69 @@ async function shopifyFindOrCreateCustomer({ kundeninfo, email }) {
   return { status: "created", customer: created };
 }
 
-async function shopifySaveKreation({
+async function shopifySaveKreationFlatFields({
   customerId,
-  kundeninfo,
-  email,
   nameFragrance,
   konzentration,
-  duft1,
-  duft2,
-  duft3,
-  formatMl,
-  p1,
-  p2,
-  p3,
-  datum
+  datumErstellung,
+  mengeMl,
+  duft1Name,
+  duft2Name,
+  duft3Name,
+  duft1Anteil,
+  duft2Anteil,
+  duft3Anteil
 }) {
-  const density = 1.19; // 1g = 1.19ml
-  const ml = toNum(formatMl);
+  // Eure Metaobject-Felder existieren (siehe Screenshots):
+  // - name
+  // - konzentration
+  // - datum_erstellung
+  // - menge_ml
+  // - duft_1_name, duft_1_anteil, duft_1_gramm, duft_1_ml
+  // - duft_2_name, ...
+  // - duft_3_name, ...
+  //
+  // Wichtig: Hier senden wir nur die Felder, die DEFINITIV existieren.
+  // Gramm/ml pro Duft sind optional; wenn euer Backend sie nutzt, kann es sie selbst berechnen.
+  const payload = {
+    customerId: String(customerId),
+    kreation: {
+      name: String(nameFragrance || "").trim(),
+      konzentration: String(konzentration || "EDP"),
+      datum_erstellung: String(datumErstellung || ""),
+      menge_ml: Number(toNum(mengeMl)),
 
-  const pct1 = toNum(p1);
-  const pct2 = toNum(p2);
-  const pct3 = toNum(p3);
+      duft_1_name: String(duft1Name || "").trim(),
+      duft_2_name: String(duft2Name || "").trim(),
+      duft_3_name: String(duft3Name || "").trim(),
 
-  const g1 = round1((ml * (pct1 / 100)) / density);
-  const g2 = round1((ml * (pct2 / 100)) / density);
-  const g3 = round1((ml * (pct3 / 100)) / density);
-
-  // WICHTIG: euer Render-Backend erwartet "kreation" als Objekt (sonst 422: kreation fehlt/ungültig)
-  const kreation = {
-    name: String(nameFragrance || "").trim(),
-    konzentration: String(konzentration || "EDP"),
-    datum: String(datum || ""),
-    formatMl: ml,
-    kunde: {
-      kundeninfo: String(kundeninfo || "").trim(),
-      email: normalizeEmail(email)
-    },
-    duft1: { name: String(duft1 || "").trim(), prozent: pct1, gramm: g1 },
-    duft2: { name: String(duft2 || "").trim(), prozent: pct2, gramm: g2 },
-    duft3: { name: String(duft3 || "").trim(), prozent: pct3, gramm: g3 }
+      duft_1_anteil: Number(toNum(duft1Anteil)),
+      duft_2_anteil: Number(toNum(duft2Anteil)),
+      duft_3_anteil: Number(toNum(duft3Anteil))
+    }
   };
 
-  if (!kreation.name || !kreation.formatMl || !kreation.duft1.name || !kreation.duft1.prozent) {
-    const e = new Error("Kreation unvollständig (Name/Format/Duft 1/% fehlen).");
+  // Minimal-Validierung (damit Render nicht 422 wirft)
+  if (!payload.kreation.name) {
+    const e = new Error("Kreation fehlt/ungültig (Name Fragrance fehlt).");
+    e.statusCode = 422;
+    throw e;
+  }
+  if (!payload.kreation.menge_ml) {
+    const e = new Error("Kreation fehlt/ungültig (Format ml fehlt).");
+    e.statusCode = 422;
+    throw e;
+  }
+  if (!payload.kreation.duft_1_name) {
+    const e = new Error("Kreation fehlt/ungültig (Duft 1 fehlt).");
     e.statusCode = 422;
     throw e;
   }
 
-  // POST /save-kreation (wie in eurem alten Backend)
   return await renderFetch(`/save-kreation`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      customerId: String(customerId),
-      kreation
-    })
+    body: JSON.stringify(payload)
   });
 }
 
@@ -195,20 +202,19 @@ export async function handler(event) {
       return { statusCode: 502, headers, body: JSON.stringify({ error: "Shopify Kunde-ID nicht gefunden." }) };
     }
 
-    await shopifySaveKreation({
+    // Save kreation in Shopify using existing metaobject field handles
+    await shopifySaveKreationFlatFields({
       customerId,
-      kundeninfo,
-      email,
       nameFragrance: payload["Name Fragrance"] ?? "",
       konzentration: payload["Konzentration"] ?? "EDP",
-      duft1: payload["Duft 1"] ?? "",
-      duft2: payload["Duft 2"] ?? "",
-      duft3: payload["Duft 3"] ?? "",
-      formatMl: payload["Format ml"] ?? "",
-      p1: payload["%/1"] ?? "",
-      p2: payload["%/2"] ?? "",
-      p3: payload["%/3"] ?? "",
-      datum: payload["Datum Kauf"] ?? ""
+      datumErstellung: payload["Datum Kauf"] ?? "",
+      mengeMl: payload["Format ml"] ?? "",
+      duft1Name: payload["Duft 1"] ?? "",
+      duft2Name: payload["Duft 2"] ?? "",
+      duft3Name: payload["Duft 3"] ?? "",
+      duft1Anteil: payload["%/1"] ?? "",
+      duft2Anteil: payload["%/2"] ?? "",
+      duft3Anteil: payload["%/3"] ?? ""
     });
 
     // -------- Excel schreiben --------
