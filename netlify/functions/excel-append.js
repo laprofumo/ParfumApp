@@ -5,12 +5,6 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function round1(n) {
-  const x = Number(n);
-  if (!Number.isFinite(x)) return 0;
-  return Math.round(x * 10) / 10;
-}
-
 function toNum(v) {
   if (v === null || v === undefined) return 0;
   const s = String(v).replace(",", ".").trim();
@@ -28,6 +22,34 @@ function splitCustomerInfoToNames(kundeninfo) {
   const parts = s.split(" ");
   if (parts.length === 1) return { firstName: parts[0], lastName: "" };
   return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
+
+// Converts "DD.MM.YY" or "DD.MM.YYYY" to "YYYY-MM-DD".
+// Returns "" if it cannot parse.
+function chDateToIso(dateStr) {
+  const s = String(dateStr || "").trim();
+  if (!s) return "";
+
+  // already ISO?
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+  const m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})$/);
+  if (!m) return "";
+
+  let d = Number(m[1]);
+  let mo = Number(m[2]);
+  let y = Number(m[3]);
+
+  if (!Number.isFinite(d) || !Number.isFinite(mo) || !Number.isFinite(y)) return "";
+  if (d < 1 || d > 31 || mo < 1 || mo > 12) return "";
+
+  // Interpret 2-digit year as 2000-2099 (good enough for your use-case)
+  if (String(m[3]).length === 2) y = 2000 + y;
+
+  const yyyy = String(y).padStart(4, "0");
+  const mm = String(mo).padStart(2, "0");
+  const dd = String(d).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 async function renderFetch(path, { method = "GET", headers = {}, body } = {}) {
@@ -88,7 +110,7 @@ async function shopifySaveKreationFlatFields({
   customerId,
   nameFragrance,
   konzentration,
-  datumErstellung,
+  datumKaufCH, // comes as "DD.MM.YY" from Excel rule
   mengeMl,
   duft1Name,
   duft2Name,
@@ -97,47 +119,39 @@ async function shopifySaveKreationFlatFields({
   duft2Anteil,
   duft3Anteil
 }) {
-  // Eure Metaobject-Felder existieren (siehe Screenshots):
-  // - name
-  // - konzentration
-  // - datum_erstellung
-  // - menge_ml
-  // - duft_1_name, duft_1_anteil, duft_1_gramm, duft_1_ml
-  // - duft_2_name, ...
-  // - duft_3_name, ...
-  //
-  // Wichtig: Hier senden wir nur die Felder, die DEFINITIV existieren.
-  // Gramm/ml pro Duft sind optional; wenn euer Backend sie nutzt, kann es sie selbst berechnen.
-  const payload = {
-    customerId: String(customerId),
-    kreation: {
-      name: String(nameFragrance || "").trim(),
-      konzentration: String(konzentration || "EDP"),
-      datum_erstellung: String(datumErstellung || ""),
-      menge_ml: Number(toNum(mengeMl)),
+  const isoDate = chDateToIso(datumKaufCH);
+  if (!isoDate) {
+    const e = new Error("Value must be in YYYY-MM-DD format.");
+    e.statusCode = 422;
+    throw e;
+  }
 
-      duft_1_name: String(duft1Name || "").trim(),
-      duft_2_name: String(duft2Name || "").trim(),
-      duft_3_name: String(duft3Name || "").trim(),
+  const kreation = {
+    name: String(nameFragrance || "").trim(),
+    konzentration: String(konzentration || "EDP"),
+    datum_erstellung: isoDate, // Shopify wants YYYY-MM-DD
+    menge_ml: Number(toNum(mengeMl)),
 
-      duft_1_anteil: Number(toNum(duft1Anteil)),
-      duft_2_anteil: Number(toNum(duft2Anteil)),
-      duft_3_anteil: Number(toNum(duft3Anteil))
-    }
+    duft_1_name: String(duft1Name || "").trim(),
+    duft_2_name: String(duft2Name || "").trim(),
+    duft_3_name: String(duft3Name || "").trim(),
+
+    duft_1_anteil: Number(toNum(duft1Anteil)),
+    duft_2_anteil: Number(toNum(duft2Anteil)),
+    duft_3_anteil: Number(toNum(duft3Anteil))
   };
 
-  // Minimal-Validierung (damit Render nicht 422 wirft)
-  if (!payload.kreation.name) {
+  if (!kreation.name) {
     const e = new Error("Kreation fehlt/ungültig (Name Fragrance fehlt).");
     e.statusCode = 422;
     throw e;
   }
-  if (!payload.kreation.menge_ml) {
+  if (!kreation.menge_ml) {
     const e = new Error("Kreation fehlt/ungültig (Format ml fehlt).");
     e.statusCode = 422;
     throw e;
   }
-  if (!payload.kreation.duft_1_name) {
+  if (!kreation.duft_1_name) {
     const e = new Error("Kreation fehlt/ungültig (Duft 1 fehlt).");
     e.statusCode = 422;
     throw e;
@@ -146,7 +160,10 @@ async function shopifySaveKreationFlatFields({
   return await renderFetch(`/save-kreation`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({
+      customerId: String(customerId),
+      kreation
+    })
   });
 }
 
@@ -202,12 +219,11 @@ export async function handler(event) {
       return { statusCode: 502, headers, body: JSON.stringify({ error: "Shopify Kunde-ID nicht gefunden." }) };
     }
 
-    // Save kreation in Shopify using existing metaobject field handles
     await shopifySaveKreationFlatFields({
       customerId,
       nameFragrance: payload["Name Fragrance"] ?? "",
       konzentration: payload["Konzentration"] ?? "EDP",
-      datumErstellung: payload["Datum Kauf"] ?? "",
+      datumKaufCH: payload["Datum Kauf"] ?? "", // DD.MM.YY (Excel rule)
       mengeMl: payload["Format ml"] ?? "",
       duft1Name: payload["Duft 1"] ?? "",
       duft2Name: payload["Duft 2"] ?? "",
@@ -241,7 +257,7 @@ export async function handler(event) {
     const J = payload["%/3"] ?? "";
     const K = payload["Duft 3"] ?? "";
     const N = payload["Format ml"] ?? "";
-    const O = payload["Datum Kauf"] ?? "";
+    const O = payload["Datum Kauf"] ?? ""; // keep CH format in Excel
     const P = payload["Bemerkungen"] ?? "";
     const AH = email;
 
