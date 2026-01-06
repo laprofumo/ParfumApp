@@ -38,15 +38,21 @@ function modalConfirm({ title, bodyHtml, okText = "OK", cancelText = "Abbrechen"
       title,
       bodyHtml,
       buttons: [
-        {
-          text: cancelText,
-          onClick: () => resolve(false)
-        },
-        {
-          text: okText,
-          className: "primary",
-          onClick: () => resolve(true)
-        }
+        { text: cancelText, onClick: () => resolve(false) },
+        { text: okText, className: "primary", onClick: () => resolve(true) }
+      ]
+    });
+  });
+}
+
+function showAfterSavePopup() {
+  return new Promise((resolve) => {
+    showModal({
+      title: "Gespeichert",
+      bodyHtml: "Kreation gespeichert. Weitere Kreation erstellen?",
+      buttons: [
+        { text: "Abbrechen", onClick: () => resolve(false) },
+        { text: "Weitere Kreation erstellen", className: "primary", onClick: () => resolve(true) }
       ]
     });
   });
@@ -169,7 +175,6 @@ export async function renderCreate(root) {
   const printBtn = document.getElementById("print");
   const clearBtn = document.getElementById("clear");
 
-  // Printing is only allowed after a successful save
   printBtn.disabled = true;
 
   const clearCreationFieldsKeepCustomer = () => {
@@ -180,7 +185,6 @@ export async function renderCreate(root) {
     printBtn.disabled = true;
   };
 
-  // Format: custom popup
   document.getElementById("format").addEventListener("change", () => {
     const v = getVal("format");
     if (v === "custom") {
@@ -210,7 +214,6 @@ export async function renderCreate(root) {
     const ln = getVal("nachname").trim();
     const emailRaw = getVal("email").trim();
 
-    // Call the existing Netlify function (it returns status: created|existing)
     const cRes = await fetch("/.netlify/functions/shopify-customer-find-or-create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -222,7 +225,6 @@ export async function renderCreate(root) {
       throw new Error(cJson?.error || "Shopify Kunde Fehler.");
     }
 
-    // If existing, ask BEFORE saving the creation
     if (cJson.status === "existing") {
       const ok = await modalConfirm({
         title: "Bestehender Kunde",
@@ -230,10 +232,10 @@ export async function renderCreate(root) {
         okText: "Speichern",
         cancelText: "Abbrechen"
       });
-      if (!ok) return { proceed: false, status: "existing" };
+      if (!ok) return { proceed: false };
     }
 
-    return { proceed: true, status: cJson.status || null };
+    return { proceed: true };
   }
 
   async function doSave() {
@@ -248,7 +250,6 @@ export async function renderCreate(root) {
     const formatMl = formatSel === "custom" ? Number(document.getElementById("format").dataset.custom || "") : Number(formatSel);
     if (!formatMl) throw new Error("Format fehlt (oder individuelles Format nicht bestätigt).");
 
-    // Precheck (Shopify): existing? -> ask before save
     const pre = await precheckCustomerExistingOrCreateAllowed();
     if (!pre.proceed) {
       msg.textContent = "Abgebrochen.";
@@ -271,7 +272,6 @@ export async function renderCreate(root) {
       Bemerkungen: getVal("bem")
     };
 
-    // Single call that saves to Shopify + Excel (your Netlify function excel-append does both now)
     const r = await excelAppend(payload);
     const full = await excelGetRow(r.row);
 
@@ -284,6 +284,13 @@ export async function renderCreate(root) {
 
     msg.textContent = `Gespeichert ✅ (Zeile ${r.row})`;
     printBtn.disabled = false;
+
+    // Always show popup after successful save (Shopify + Excel)
+    const again = await showAfterSavePopup();
+    if (again) {
+      clearCreationFieldsKeepCustomer();
+      msg.textContent = "Bereit für weitere Kreation (Kunde bleibt).";
+    }
   }
 
   async function doPrintFirstCreation() {
@@ -363,7 +370,6 @@ export async function renderCreate(root) {
       if (!lastSaved) throw new Error("Bitte zuerst speichern.");
       await doPrintFirstCreation();
 
-      // After successful print: only clear creation fields, keep customer
       clearCreationFieldsKeepCustomer();
       msg.textContent = "Bereit für weitere Kreation (Kunde bleibt).";
     } catch (e) {
@@ -382,9 +388,7 @@ export async function renderCreate(root) {
     clearBtn.textContent = "Lösche...";
 
     try {
-      ["vorname", "nachname", "email", "namefragrance", "p1", "d1", "p2", "d2", "p3", "d3", "bem", "g1", "g2", "g3", "tot"].forEach((id) =>
-        setVal(id, "")
-      );
+      ["vorname", "nachname", "email", "namefragrance", "p1", "d1", "p2", "d2", "p3", "d3", "bem", "g1", "g2", "g3", "tot"].forEach((id) => setVal(id, ""));
       setVal("konz", "EDP");
       setVal("format", "15");
       lastSaved = null;
