@@ -206,6 +206,21 @@ export async function renderCreate(root) {
       "Bemerkungen": getVal("bem")
     };
 
+    // 1) Shopify Kunde suchen/anlegen (muss VOR Excel passieren)
+const cRes = await fetch("/.netlify/functions/shopify-customer-find-or-create", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    firstName: getVal("vorname").trim(),
+    lastName: getVal("nachname").trim(),
+    email: getVal("email").trim()
+  })
+});
+
+const cJson = await cRes.json().catch(() => ({}));
+if (!cRes.ok) {
+  throw new Error(cJson?.error || "Shopify Kunde konnte nicht erstellt/gefunden werden.");
+}
     const r = await excelAppend(payload);
     const full = await excelGetRow(r.row);
 
