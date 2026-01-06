@@ -371,14 +371,3 @@ if (cJson.status === "existing") {
     }
   };
 }
-<div id="existingCustomerModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:9999;">
-  <div style="background:#fff; width:min(420px,90%); margin:20vh auto; padding:16px; border-radius:8px;">
-    <div style="margin-bottom:12px;">
-      Bestehender Kunde – weitere Kreationen erstellen?
-    </div>
-    <div style="display:flex; gap:8px; justify-content:flex-end;">
-      <button id="btnCancelCreation" type="button">Abbrechen</button>
-      <button id="btnMoreCreation" type="button">Weitere Kreation erstellen</button>
-    </div>
-  </div>
-</div>
