@@ -42,16 +42,20 @@ async function renderFetch(path, { method = "GET", headers = {}, body } = {}) {
 
   const res = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: {
-      ...headers,
-      "X-API-KEY": apiKey
-    },
+    headers: { ...headers, "X-API-KEY": apiKey },
     body
   });
 
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const e = new Error(json?.error || json?.message || `Render error ${res.status}`);
+    // 422 kommt von eurem Backend oft mit einer konkreten Meldung
+    const msg =
+      json?.error ||
+      json?.message ||
+      json?.details?.error ||
+      json?.details?.message ||
+      `Render error ${res.status}`;
+    const e = new Error(msg);
     e.statusCode = res.status;
     e.details = json;
     throw e;
@@ -96,8 +100,7 @@ async function shopifySaveKreation({
   p3,
   datum
 }) {
-  // Shopify-Berechnung wie im alten Frontend (Dichte 1g = 1.19ml)
-  const density = 1.19;
+  const density = 1.19; // 1g = 1.19ml
   const ml = toNum(formatMl);
 
   const pct1 = toNum(p1);
@@ -108,30 +111,34 @@ async function shopifySaveKreation({
   const g2 = round1((ml * (pct2 / 100)) / density);
   const g3 = round1((ml * (pct3 / 100)) / density);
 
-  // Der Render-Backend-Endpunkt existiert in eurem alten Backend:
-  // POST /save-kreation
-  // Wir senden alle relevanten Felder; Backend kann ignorieren, was es nicht braucht.
+  // WICHTIG: euer Render-Backend erwartet "kreation" als Objekt (sonst 422: kreation fehlt/ungültig)
+  const kreation = {
+    name: String(nameFragrance || "").trim(),
+    konzentration: String(konzentration || "EDP"),
+    datum: String(datum || ""),
+    formatMl: ml,
+    kunde: {
+      kundeninfo: String(kundeninfo || "").trim(),
+      email: normalizeEmail(email)
+    },
+    duft1: { name: String(duft1 || "").trim(), prozent: pct1, gramm: g1 },
+    duft2: { name: String(duft2 || "").trim(), prozent: pct2, gramm: g2 },
+    duft3: { name: String(duft3 || "").trim(), prozent: pct3, gramm: g3 }
+  };
+
+  if (!kreation.name || !kreation.formatMl || !kreation.duft1.name || !kreation.duft1.prozent) {
+    const e = new Error("Kreation unvollständig (Name/Format/Duft 1/% fehlen).");
+    e.statusCode = 422;
+    throw e;
+  }
+
+  // POST /save-kreation (wie in eurem alten Backend)
   return await renderFetch(`/save-kreation`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      customerId,
-      kundeninfo,
-      email,
-      nameFragrance,
-      konzentration,
-      duft1,
-      duft2,
-      duft3,
-      formatMl: ml,
-      datum,
-      // berechnete Werte für Shopify
-      g1,
-      g2,
-      g3,
-      pct1,
-      pct2,
-      pct3
+      customerId: String(customerId),
+      kreation
     })
   });
 }
@@ -154,7 +161,6 @@ async function graphWithRetry(access_token, url, options, tries = 4) {
     } catch (e) {
       lastErr = e;
       if (!isExcelLockError(e)) throw e;
-      // backoff: 800ms, 1600ms, 2400ms...
       await sleep(800 * (i + 1));
     }
   }
@@ -173,17 +179,12 @@ export async function handler(event) {
     const kundeninfo = payload["Kundeninfo"] ?? "";
     const email = normalizeEmail(payload["Email"] ?? "");
     if (!email) {
-      return {
-        statusCode: 400,
-        headers,
-        body: JSON.stringify({ error: "Email fehlt." })
-      };
+      return { statusCode: 400, headers, body: JSON.stringify({ error: "Email fehlt." }) };
     }
 
     const customerResult = await shopifyFindOrCreateCustomer({ kundeninfo, email });
     const customer = customerResult.customer;
 
-    // customer id aus verschiedenen möglichen Formen
     const customerId =
       customer?.id ??
       customer?.customer?.id ??
@@ -191,14 +192,9 @@ export async function handler(event) {
       null;
 
     if (!customerId) {
-      return {
-        statusCode: 502,
-        headers,
-        body: JSON.stringify({ error: "Shopify Kunde-ID nicht gefunden." })
-      };
+      return { statusCode: 502, headers, body: JSON.stringify({ error: "Shopify Kunde-ID nicht gefunden." }) };
     }
 
-    // Kreation in Shopify speichern (vor Excel)
     await shopifySaveKreation({
       customerId,
       kundeninfo,
@@ -221,7 +217,6 @@ export async function handler(event) {
 
     const sheet = "Duftkreationen";
 
-    // 1) find next row using usedRange
     const used = await graphWithRetry(
       access_token,
       `/me/drive/root:/${encodeURI(process.env.ONEDRIVE_EXCEL_PATH)}:/workbook/worksheets('${sheet}')/usedRange(valuesOnly=true)?$select=rowCount`,
@@ -230,7 +225,6 @@ export async function handler(event) {
     const rowCount = used?.rowCount || 2;
     const nextRow = rowCount + 1;
 
-    // 2) build row values for agreed columns
     const A = payload["Kundeninfo"] ?? "";
     const B = payload["Name Fragrance"] ?? "";
     const C = payload["Konzentration"] ?? "EDP";
@@ -243,64 +237,38 @@ export async function handler(event) {
     const N = payload["Format ml"] ?? "";
     const O = payload["Datum Kauf"] ?? "";
     const P = payload["Bemerkungen"] ?? "";
-    const AH = email; // neue Spalte AH
+    const AH = email;
 
-    // Segment 1: A:E
     await graphWithRetry(
       access_token,
       `/me/drive/root:/${encodeURI(process.env.ONEDRIVE_EXCEL_PATH)}:/workbook/worksheets('${sheet}')/range(address='A${nextRow}:E${nextRow}')`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ values: [[A, B, C, D, E]] })
-      }
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values: [[A, B, C, D, E]] }) }
     );
 
-    // Segment 2: G:H
     await graphWithRetry(
       access_token,
       `/me/drive/root:/${encodeURI(process.env.ONEDRIVE_EXCEL_PATH)}:/workbook/worksheets('${sheet}')/range(address='G${nextRow}:H${nextRow}')`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ values: [[G, H]] })
-      }
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values: [[G, H]] }) }
     );
 
-    // Segment 3: J:K
     await graphWithRetry(
       access_token,
       `/me/drive/root:/${encodeURI(process.env.ONEDRIVE_EXCEL_PATH)}:/workbook/worksheets('${sheet}')/range(address='J${nextRow}:K${nextRow}')`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ values: [[J, K]] })
-      }
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values: [[J, K]] }) }
     );
 
-    // Segment 4: N:P
     await graphWithRetry(
       access_token,
       `/me/drive/root:/${encodeURI(process.env.ONEDRIVE_EXCEL_PATH)}:/workbook/worksheets('${sheet}')/range(address='N${nextRow}:P${nextRow}')`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ values: [[N, O, P]] })
-      }
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values: [[N, O, P]] }) }
     );
 
-    // Segment 5: AH (Email)
     await graphWithRetry(
       access_token,
       `/me/drive/root:/${encodeURI(process.env.ONEDRIVE_EXCEL_PATH)}:/workbook/worksheets('${sheet}')/range(address='AH${nextRow}:AH${nextRow}')`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ values: [[AH]] })
-      }
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values: [[AH]] }) }
     );
 
-    // 3) read computed cells F:I:L:M via F..M
     const computed = await graphWithRetry(
       access_token,
       `/me/drive/root:/${encodeURI(process.env.ONEDRIVE_EXCEL_PATH)}:/workbook/worksheets('${sheet}')/range(address='F${nextRow}:M${nextRow}')?$select=values`,
@@ -325,7 +293,7 @@ export async function handler(event) {
         computed: result,
         shopify: {
           customerStatus: customerResult.status,
-          customerId
+          customerId: String(customerId)
         }
       })
     };
@@ -334,9 +302,7 @@ export async function handler(event) {
       return {
         statusCode: 409,
         headers,
-        body: JSON.stringify({
-          error: "Excel ist gerade geöffnet. Bitte Datei schließen und erneut speichern."
-        })
+        body: JSON.stringify({ error: "Excel ist gerade geöffnet. Bitte Datei schließen und erneut speichern." })
       };
     }
     return {
