@@ -25,6 +25,7 @@ function getVal(id){ return document.getElementById(id).value; }
 function setVal(id,v){ document.getElementById(id).value = v; }
 
 let lastSaved = null; // { row, payload, computed, fullRow }
+let lastCustomerStatus = null; // "created" | "existing" | null
 
 export async function renderCreate(root) {
   root.innerHTML = `
@@ -154,6 +155,9 @@ export async function renderCreate(root) {
     printBtn.disabled = true;
   };
 
+  // Backwards-compatible alias (some logic may call this name)
+  const clearCreationFields = clearCreationFieldsKeepCustomer;
+
   // keep Kundeninfo = "Vorname Nachname" (Excel column A)
   const getCustomerInfo = () => `${getVal("vorname").trim()} ${getVal("nachname").trim()}`.trim();
   document.getElementById("vorname")
@@ -206,37 +210,18 @@ export async function renderCreate(root) {
       "Bemerkungen": getVal("bem")
     };
 
-    // 1) Shopify Kunde suchen/anlegen (muss VOR Excel passieren)
-const cRes = await fetch("/.netlify/functions/shopify-customer-find-or-create", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    firstName: getVal("vorname").trim(),
-    lastName: getVal("nachname").trim(),
-    email: getVal("email").trim()
-  })
-});
+    // Shopify: find-or-create customer (required before Excel)
+    const cRes = await fetch("/.netlify/functions/shopify-customer-find-or-create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ firstName: fn, lastName: ln, email: emailRaw })
+    });
+    const cJson = await cRes.json().catch(() => ({}));
+    if (!cRes.ok) throw new Error(cJson?.error || "Shopify Kunde Fehler.");
+    lastCustomerStatus = cJson?.status || null;
 
-const cJson = await cRes.json().catch(() => ({}));
-if (!cRes.ok) {
-  throw new Error(cJson?.error || "Shopify Kunde konnte nicht erstellt/gefunden werden.");
-}
     const r = await excelAppend(payload);
     const full = await excelGetRow(r.row);
-    
-// Wenn bestehender Kunde: Nachfrage für weitere Kreation
-if (cJson.status === "existing") {
-  const again = confirm(
-    "Bestehender Kunde – weitere Kreationen erstellen?"
-  );
-
-  if (again) {
-    // nur Kreationsfelder leeren
-    clearCreationFields(); 
-    // Kunde bleibt (Vorname, Nachname, E-Mail)
-    return;
-  }
-}
 
     lastSaved = { row: r.row, payload, computed: r.computed, fullRow: full };
 
@@ -246,6 +231,26 @@ if (cJson.status === "existing") {
     setVal("tot", full["Total %"] || "");
     msg.textContent = `Gespeichert ✅ (Zeile ${r.row})`;
     printBtn.disabled = false;
+
+    // Existing customer: ask to start another creation (customer stays)
+    if (lastCustomerStatus === "existing") {
+      showModal({
+        title: "Bestehender Kunde",
+        bodyHtml: "Bestehender Kunde – weitere Kreationen erstellen?",
+        buttons: [
+          {
+            text: "Weitere Kreation erstellen",
+            className: "primary",
+            onClick: () => {
+              clearCreationFields();
+              msg.textContent = "Bereit für neue Kreation (Kunde bleibt).";
+            }
+          },
+          { text: "Abbrechen" }
+        ]
+      });
+      return;
+    }
 
     if (askPrint) {
       showModal({
