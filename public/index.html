@@ -4,6 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>La Profumoteca – Rezept App</title>
+  <meta name="theme-color" content="#145D2C" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icons/icon-192.png" />
   <link rel="stylesheet" href="/assets/styles.css" />
 </head>
 <body>
@@ -27,5 +30,13 @@
 </div>
 
 <script type="module" src="/assets/router.js"></script>
+
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    });
+  }
+</script>
 </body>
 </html>
